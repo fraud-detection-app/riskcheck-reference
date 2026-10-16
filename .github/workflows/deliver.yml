@@ -1,0 +1,257 @@
+# Lab 5 - Continuous Delivery, simulated. Nothing is really deployed.
+#
+# ONE merge into main starts ONE run. The run builds ONCE and then moves the SAME file
+# through the environments, one job after another:
+#
+#   build -> deploy-dev -> deploy-sit -> deploy-pre-prod (approval) -> deploy-prod (approval) -> release
+#
+# The artifact is named after the commit: riskcheck-sha-<40 hex>. The jobs after `build` never
+# build again; they download that artifact and print its sha256, so you can see it is the same
+# file in all four environments.
+#
+# Not for documentation or infra: a README or infra/ change does not deliver the app
+# (`paths-ignore`). infra.yml delivers infra on its own.
+
+name: deliver
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "infra/**"
+      - "**/*.md"
+  workflow_dispatch:             # "Run workflow" on main re-delivers main's latest commit
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------- build
+  build:
+    name: build                  # rollback.yml looks for THIS job's result
+    runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.wheel.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Build the wheel (an installable package file)
+        run: python -m pip wheel . --no-deps -w dist
+      - name: Fingerprint it
+        id: wheel
+        run: |
+          wheel=$(ls dist/*.whl)
+          hash=$(sha256sum "$wheel" | cut -d' ' -f1)
+          echo "built $wheel"
+          echo "fingerprint : $hash"
+          echo "sha256=$hash" >> "$GITHUB_OUTPUT"
+      - name: Upload it, named after the commit
+        uses: actions/upload-artifact@v7
+        with:
+          name: riskcheck-sha-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ------------------------------------------------------------ the deploys
+  # Four jobs, same steps, one environment each. (The stretch homework turns the repeated steps
+  # into ONE composite action.) The `environment:` line is where GitHub checks the Environment's
+  # rules: only main may deploy, and pre-prod and prod wait for a reviewer.
+  # `concurrency`: one deploy per environment at a time.
+  # `actions: read`: lets a job read Actions data (artifacts).
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    env:
+      ENV_NAME: dev
+      APPROVAL: "no"
+      EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+    steps:
+      - name: Download the artifact that build made in THIS run
+        uses: actions/download-artifact@v8
+        with:
+          name: riskcheck-sha-${{ github.sha }}
+          path: artifact
+      - name: Deploy (simulated)
+        run: |
+          wheel=$(find artifact -name '*.whl' | head -n 1)
+          hash=$(sha256sum "$wheel" | cut -d' ' -f1)
+          if [ "$hash" != "$EXPECTED_SHA256" ]; then
+            echo "::error title=Not the file we built::$wheel has sha256 $hash, but build made $EXPECTED_SHA256"
+            exit 1
+          fi
+          echo "deploying riskcheck sha-$GITHUB_SHA to $ENV_NAME"
+          echo "  artifact : $wheel"
+          echo "  sha256   : $hash"
+          echo "  would run: terraform apply -var-file=envs/$ENV_NAME.tfvars -var artifact_sha256=$hash"
+          {
+            echo "### Deploy to $ENV_NAME (simulated)"
+            echo ""
+            echo "| Environment | Commit | Artifact | sha256 | Approval? |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| $ENV_NAME | \`${GITHUB_SHA:0:12}\` | \`$(basename "$wheel")\` | \`${hash:0:12}\` | $APPROVAL |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-sit:
+    needs: [build, deploy-dev]
+    runs-on: ubuntu-latest
+    environment: sit
+    concurrency:
+      group: deploy-sit
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    env:
+      ENV_NAME: sit
+      APPROVAL: "no"
+      EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+    steps:
+      - name: Download the artifact that build made in THIS run
+        uses: actions/download-artifact@v8
+        with:
+          name: riskcheck-sha-${{ github.sha }}
+          path: artifact
+      - name: Deploy (simulated)
+        run: |
+          wheel=$(find artifact -name '*.whl' | head -n 1)
+          hash=$(sha256sum "$wheel" | cut -d' ' -f1)
+          if [ "$hash" != "$EXPECTED_SHA256" ]; then
+            echo "::error title=Not the file we built::$wheel has sha256 $hash, but build made $EXPECTED_SHA256"
+            exit 1
+          fi
+          echo "deploying riskcheck sha-$GITHUB_SHA to $ENV_NAME"
+          echo "  artifact : $wheel"
+          echo "  sha256   : $hash"
+          echo "  would run: terraform apply -var-file=envs/$ENV_NAME.tfvars -var artifact_sha256=$hash"
+          {
+            echo "### Deploy to $ENV_NAME (simulated)"
+            echo ""
+            echo "| Environment | Commit | Artifact | sha256 | Approval? |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| $ENV_NAME | \`${GITHUB_SHA:0:12}\` | \`$(basename "$wheel")\` | \`${hash:0:12}\` | $APPROVAL |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-pre-prod:
+    needs: [build, deploy-sit]
+    runs-on: ubuntu-latest
+    environment: pre-prod        # has a required reviewer: the job waits here
+    concurrency:
+      group: deploy-pre-prod
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    env:
+      ENV_NAME: pre-prod
+      APPROVAL: "yes (required reviewer)"
+      EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+    steps:
+      - name: Download the artifact that build made in THIS run
+        uses: actions/download-artifact@v8
+        with:
+          name: riskcheck-sha-${{ github.sha }}
+          path: artifact
+      - name: Deploy (simulated)
+        run: |
+          wheel=$(find artifact -name '*.whl' | head -n 1)
+          hash=$(sha256sum "$wheel" | cut -d' ' -f1)
+          if [ "$hash" != "$EXPECTED_SHA256" ]; then
+            echo "::error title=Not the file we built::$wheel has sha256 $hash, but build made $EXPECTED_SHA256"
+            exit 1
+          fi
+          echo "deploying riskcheck sha-$GITHUB_SHA to $ENV_NAME"
+          echo "  artifact : $wheel"
+          echo "  sha256   : $hash"
+          echo "  would run: terraform apply -var-file=envs/$ENV_NAME.tfvars -var artifact_sha256=$hash"
+          {
+            echo "### Deploy to $ENV_NAME (simulated)"
+            echo ""
+            echo "| Environment | Commit | Artifact | sha256 | Approval? |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| $ENV_NAME | \`${GITHUB_SHA:0:12}\` | \`$(basename "$wheel")\` | \`${hash:0:12}\` | $APPROVAL |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-prod:
+    needs: [build, deploy-pre-prod]
+    runs-on: ubuntu-latest
+    environment: prod            # has a required reviewer: the job waits here
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    env:
+      ENV_NAME: prod
+      APPROVAL: "yes (required reviewer)"
+      EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+    steps:
+      - name: Download the artifact that build made in THIS run
+        uses: actions/download-artifact@v8
+        with:
+          name: riskcheck-sha-${{ github.sha }}
+          path: artifact
+      - name: Deploy (simulated)
+        run: |
+          wheel=$(find artifact -name '*.whl' | head -n 1)
+          hash=$(sha256sum "$wheel" | cut -d' ' -f1)
+          if [ "$hash" != "$EXPECTED_SHA256" ]; then
+            echo "::error title=Not the file we built::$wheel has sha256 $hash, but build made $EXPECTED_SHA256"
+            exit 1
+          fi
+          echo "deploying riskcheck sha-$GITHUB_SHA to $ENV_NAME"
+          echo "  artifact : $wheel"
+          echo "  sha256   : $hash"
+          echo "  would run: terraform apply -var-file=envs/$ENV_NAME.tfvars -var artifact_sha256=$hash"
+          {
+            echo "### Deploy to $ENV_NAME (simulated)"
+            echo ""
+            echo "| Environment | Commit | Artifact | sha256 | Approval? |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| $ENV_NAME | \`${GITHUB_SHA:0:12}\` | \`$(basename "$wheel")\` | \`${hash:0:12}\` | $APPROVAL |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------- release
+  # Only after prod succeeded. The version is the VERSION file: bump it in the pull request.
+  # This is the only job that may write to the repo (it creates a tag and a GitHub Release).
+  release:
+    needs: [build, deploy-prod]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}          # lets the gh command line tool talk to this repo
+      GH_REPO: ${{ github.repository }}
+      SHA256: ${{ needs.build.outputs.sha256 }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create the release if this version has none yet
+        run: |
+          version=$(cat VERSION)
+          tag="v$version"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error title=Bad VERSION::VERSION must look like 1.2.3, not '$version'"; exit 1 ;;
+          esac
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists - nothing to create (bump VERSION in a pull request for a new one)"
+            exit 0
+          fi
+          notes="Commit: $GITHUB_SHA
+          Artifact: riskcheck-sha-$GITHUB_SHA
+          sha256: $SHA256
+          Run: $RUN_URL"
+          gh release create "$tag" --target "$GITHUB_SHA" --title "riskcheck $tag" --notes "$notes"
+          echo "created release $tag at $GITHUB_SHA"
+          echo "### Released $tag" >> "$GITHUB_STEP_SUMMARY"
