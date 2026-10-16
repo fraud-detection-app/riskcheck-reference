@@ -17,7 +17,7 @@ RISKY_TYPES = {"TRANSFER", "CASH_OUT"}   # money that leaves the system
 KNOWN_TYPES = RISKY_TYPES | {"PAYMENT", "CASH_IN", "DEBIT"}
 RISKY_TYPE_POINTS = 0.20
 
-EMPTIED_POINTS = 0.40         # the account balance went to exactly zero
+EMPTIED_POINTS = 0.35         # the account balance went to exactly zero
 OVERDRAFT_POINTS = 0.25       # the amount is bigger than the balance before
 
 MAX_SCORE = 1.0
