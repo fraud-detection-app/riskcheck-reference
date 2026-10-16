@@ -1,0 +1,22 @@
+# Lab 4 - Continuous Integration: every pull request runs the team's test workflow.
+#
+# IMPORTANT: no `paths:` filter on this workflow, on purpose. In lab 4 a ruleset REQUIRES the check
+# "test / pytest". A required check that never reports (because a path filter skipped the
+# workflow) leaves the pull request "Waiting for status to be reported" FOREVER. So an
+# infra-only pull request must run this too. (infra.yml and deliver.yml DO use paths.)
+
+name: ci
+
+on:
+  pull_request:                  # a PR is opened or gets new commits
+  push:
+    branches: [main]             # and after every merge, so main's own tests are on record
+
+permissions:
+  contents: read
+
+jobs:
+  test:                          # first half of the check name: "test"
+    uses: ./.github/workflows/tests.yml     # call the reusable workflow in this repo
+    with:
+      python-version: "3.13"

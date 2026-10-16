@@ -1,0 +1,3 @@
+pytest>=9,<10
+# pyyaml is only for the course checks in tests/workflows/ (they read the workflow files)
+pyyaml>=6,<7

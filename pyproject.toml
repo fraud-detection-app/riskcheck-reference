@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riskcheck"
+dynamic = ["version"]
+description = "A tiny rules-based transaction risk score (practice repo for the CI/CD class)"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+# Only ship the package. (Without this, setuptools sees tests/, labs/ and
+# scripts/ side by side and refuses to guess what to include.)
+packages = ["riskcheck"]
+
+[tool.setuptools.dynamic]
+# The version lives in ONE place: the VERSION file. Bump it in a pull request and the wheel follows.
+version = {file = "VERSION"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `python -m pytest -q` runs the 8 score tests. The course checks on the workflow files live in
+# tests/workflows/ (run them with: python -m pytest tests/workflows -o addopts="").
+addopts = "--ignore=tests/workflows"
+pythonpath = ["."]
