@@ -1,3 +1,3 @@
 env      = "prod"
-replicas = 3
+replicas = 4
 log_days = 30
