@@ -1,0 +1,43 @@
+# Lab 4 - a REUSABLE workflow: "a team's template".
+# It does not start by itself. Other workflows call it with `uses: ./.github/workflows/tests.yml`,
+# so every repo (and every pipeline) of a team runs the tests the same way.
+#
+# The CHECK NAME GitHub shows (and a ruleset requires) is "<calling job> / <called job>".
+# ci.yml calls this from a job named `test`; the job below is named `pytest`; so the check is
+#
+#       test / pytest
+#
+# setup_repo.sh requires exactly that string. Rename either job and you must change it there too.
+
+name: tests
+
+on:
+  workflow_call:                 # "someone calls me"
+    inputs:
+      python-version:
+        description: Which Python to test with
+        type: string
+        default: "3.13"
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest                 # the second half of the check name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip             # reuse downloaded packages between runs
+
+      - name: Install the dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run the tests
+        run: python -m pytest -q
