@@ -1,0 +1,182 @@
+# Lab 7 - the INFRASTRUCTURE pipeline. Its own workflow, its own trigger.
+#
+# `paths: infra/**` means this workflow starts only when a pull request or a push touches infra/.
+# (deliver.yml has the opposite filter, `paths-ignore`, so an infra change never rebuilds the app.)
+# This workflow is NOT a required check: a pull request that does not touch infra/ never
+# runs it, and a required check that never runs would block that pull request forever.
+#
+#   pull request : fmt, validate and a PLAN for every environment (a matrix: 4 jobs side by side)
+#   push to main : APPLY dev -> sit -> pre-prod (approval) -> prod (approval)
+#
+# The stack uses only terraform_data, so nothing is created in any cloud, and its state file lives
+# on the runner and disappears with it. REAL infrastructure keeps its state in an S3 bucket, which
+# is what makes plan say "~ change" instead of "+ create" (week 13b).
+
+name: infra
+
+on:
+  pull_request:
+    paths: ["infra/**"]
+  push:
+    branches: [main]
+    paths: ["infra/**"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: infra     # every `run` step starts inside infra/
+
+jobs:
+  # ------------------------------------------------------- pull request: plan
+  plan:
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, sit, pre-prod, prod]
+    name: plan (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false           # plain `terraform`, so its output is exactly what you see locally
+      - name: Format check
+        run: terraform fmt -check -recursive
+      - name: Init and validate
+        run: |
+          terraform init -input=false
+          terraform validate
+      - name: Plan
+        run: |
+          terraform plan -input=false -var-file=envs/${{ matrix.env }}.tfvars -out=tfplan
+          terraform show -json tfplan > tfplan.json
+      - name: Summary
+        run: |
+          {
+            echo "### Plan for ${{ matrix.env }}"
+            echo ""
+            echo "Planned changes, with the settings this environment would get:"
+            echo ""
+            echo '```'
+            jq -r '.resource_changes[] | "\(.change.actions | join(",")) \(.address)  \(.change.after.input | tojson)"' tfplan.json
+            echo '```'
+            echo "State is empty on a fresh runner, so every plan says create. With S3 state it would show only the differences."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ----------------------------------------------------------- push: apply
+  # The same four steps for each environment; the `environment:` line is the gate.
+  apply-dev:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency:
+      group: infra-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - name: Plan, then apply exactly that plan
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -var-file=envs/dev.tfvars -out=tfplan
+          terraform apply -input=false tfplan
+      - name: Summary
+        run: |
+          {
+            echo "### Applied to dev (simulated infra)"
+            echo ""
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply-sit:
+    needs: apply-dev
+    runs-on: ubuntu-latest
+    environment: sit
+    concurrency:
+      group: infra-sit
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - name: Plan, then apply exactly that plan
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -var-file=envs/sit.tfvars -out=tfplan
+          terraform apply -input=false tfplan
+      - name: Summary
+        run: |
+          {
+            echo "### Applied to sit (simulated infra)"
+            echo ""
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply-pre-prod:
+    needs: apply-sit
+    runs-on: ubuntu-latest
+    environment: pre-prod        # required reviewer
+    concurrency:
+      group: infra-pre-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - name: Plan, then apply exactly that plan
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -var-file=envs/pre-prod.tfvars -out=tfplan
+          terraform apply -input=false tfplan
+      - name: Summary
+        run: |
+          {
+            echo "### Applied to pre-prod (simulated infra)"
+            echo ""
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply-prod:
+    needs: apply-pre-prod
+    runs-on: ubuntu-latest
+    environment: prod            # required reviewer
+    concurrency:
+      group: infra-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - name: Plan, then apply exactly that plan
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -var-file=envs/prod.tfvars -out=tfplan
+          terraform apply -input=false tfplan
+      - name: Summary
+        run: |
+          {
+            echo "### Applied to prod (simulated infra)"
+            echo ""
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

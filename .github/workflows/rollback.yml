@@ -1,0 +1,113 @@
+# Lab 6 - Roll back = deploy an OLDER build again. Nothing is rebuilt.
+#
+# Press "Run workflow" (or `gh workflow run rollback.yml -f environment=prod -f sha=<40 hex>`),
+# choose the environment and the commit that was good. Two jobs:
+#
+#   find   : is there a build for that commit that is still downloadable, made by a deliver
+#            run on main, whose BUILD JOB succeeded? If not, fail here, before anybody is asked.
+#   deploy : the same simulated deploy as deliver.yml, under the same Environment: so the same
+#            approval applies. A rollback is a deploy; it gets no shortcut.
+#
+# Why the build JOB and not the whole run? A deliver run that is still waiting for the prod
+# approval is not "completed" yet, but its build is perfectly good.
+
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Roll back which environment?
+        type: choice
+        required: true
+        options: [dev, sit, pre-prod, prod]
+      sha:
+        description: The full 40-character commit to go back to
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read              # list artifacts and read the jobs of a run
+    outputs:
+      run_id: ${{ steps.pick.outputs.run_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ inputs.sha }}
+    steps:
+      - name: Find a good build for that commit
+        id: pick
+        run: |
+          case "$SHA" in
+            *[!0-9a-f]*|"") bad=yes ;;
+            *) if [ "${#SHA}" -eq 40 ]; then bad=no; else bad=yes; fi ;;
+          esac
+          if [ "$bad" = yes ]; then
+            echo "::error title=Not a full commit hash::sha must be 40 characters of 0-9 a-f (git rev-parse <commit>), got '$SHA'"
+            exit 1
+          fi
+          artifact="riskcheck-sha-$SHA"
+          # Artifacts with this exact name that are still downloadable and came from a run on main.
+          candidates=$(gh api "repos/$GH_REPO/actions/artifacts?name=$artifact&per_page=100" \
+            --jq '.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main") | .workflow_run.id')
+          run_id=""
+          for id in $candidates; do
+            # It must be a deliver run, and its build job must have succeeded.
+            name=$(gh api "repos/$GH_REPO/actions/runs/$id" --jq .name)
+            built=$(gh api "repos/$GH_REPO/actions/runs/$id/jobs?per_page=100" --jq '.jobs[] | select(.name == "build") | .conclusion')
+            if [ "$name" = deliver ] && [ "$built" = success ]; then
+              run_id=$id
+              break
+            fi
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error title=No build to roll back to::There is no downloadable $artifact from a successful deliver build on main. Artifacts expire after 30 days; roll forward with a new pull request instead."
+            exit 1
+          fi
+          echo "found $artifact in deliver run $run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: find
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}     # the Environment's approval applies to a rollback too
+    concurrency:
+      group: deploy-${{ inputs.environment }}  # the same group as deliver.yml: one deploy per environment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read              # download an artifact made by an EARLIER run
+    env:
+      ENV_NAME: ${{ inputs.environment }}
+      SHA: ${{ inputs.sha }}
+    steps:
+      - name: Download the old artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: riskcheck-sha-${{ inputs.sha }}
+          run-id: ${{ needs.find.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: artifact
+      - name: Deploy (simulated)
+        run: |
+          wheel=$(find artifact -name '*.whl' | head -n 1)
+          hash=$(sha256sum "$wheel" | cut -d' ' -f1)
+          echo "ROLLBACK: $ENV_NAME goes back to an earlier build"
+          echo "deploying riskcheck sha-$SHA to $ENV_NAME"
+          echo "  artifact : $wheel"
+          echo "  sha256   : $hash"
+          echo "  would run: terraform apply -var-file=envs/$ENV_NAME.tfvars -var artifact_sha256=$hash"
+          {
+            echo "### Rollback of $ENV_NAME (simulated)"
+            echo ""
+            echo "| Environment | Commit | Artifact | sha256 | Started by |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| $ENV_NAME | \`${SHA:0:12}\` | \`$(basename "$wheel")\` | \`${hash:0:12}\` | $GITHUB_ACTOR |"
+          } >> "$GITHUB_STEP_SUMMARY"
