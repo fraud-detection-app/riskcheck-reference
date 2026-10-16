@@ -1,0 +1,91 @@
+# Lab 3 - a tour of workflow syntax. It changes nothing; it just LOOKS around.
+# Copy it to .github/workflows/ and push: the `push` trigger starts a run by itself.
+# After it is on main, start it by hand:  gh workflow run hello.yml -f greeting="hi class"
+
+name: hello                      # the name shown in the Actions tab
+
+on:                              # WHEN does this workflow start?
+  push:                          #   1. a push to any feature/* branch
+    branches: ["feature/**"]
+  workflow_dispatch:             #   2. a person presses "Run workflow" (or `gh workflow run`)
+    inputs:                      #      ... and may fill in a form
+      greeting:
+        description: What should the workflow say?
+        type: string
+        default: hello from the Actions tab
+
+permissions:
+  contents: read                 # least privilege: the built-in token can only read the repo
+
+env:                             # an env var for EVERY job of this workflow
+  COURSE: week 13a
+
+jobs:
+  context:
+    runs-on: ubuntu-latest       # a fresh Linux VM that GitHub lends us for this job
+    outputs:                     # values other jobs can read as needs.context.outputs.<name>
+      shout: ${{ steps.say.outputs.shout }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Print what GitHub knows about this run
+        id: say                  # an id lets later steps and the outputs above point here
+        env:                     # contexts (github.*, inputs.*) are read with ${{ }}; pass them in as env vars
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          GREETING: ${{ inputs.greeting || 'hello from a push' }}   # an expression: inputs.greeting, or the text after ||
+        run: |
+          echo "course   : $COURSE"
+          echo "event    : $EVENT"
+          echo "branch   : $BRANCH"
+          echo "commit   : $SHA"
+          echo "actor    : $ACTOR"
+          echo "greeting : $GREETING"
+          echo "shout=$(echo "$GREETING" | tr '[:lower:]' '[:upper:]')" >> "$GITHUB_OUTPUT"   # how a step sets an output
+
+      - name: Runs only when a person started it
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "someone pressed Run workflow"
+
+      - name: Runs only for a push
+        if: github.event_name == 'push'
+        run: echo "a push to $GITHUB_REF_NAME started this run"
+
+  matrix:
+    needs: context               # wait for `context`, and let us read its outputs
+    strategy:
+      matrix:                    # one job per value: they run side by side
+        python-version: ["3.12", "3.13"]
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v7
+        with:                    # `with` = the inputs of an action
+          python-version: ${{ matrix.python-version }}
+      - name: Use the output of the first job
+        env:
+          SHOUT: ${{ needs.context.outputs.shout }}      # text from a person: pass it as an env var, never paste it into the script
+        run: |
+          python --version
+          echo "the first job said: $SHOUT"
+
+  summary:
+    needs: [context, matrix]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write a summary (shows on the run's page)
+        env:
+          SHOUT: ${{ needs.context.outputs.shout }}
+        run: |
+          {
+            echo "### Hello from the runner"
+            echo ""
+            echo "| What | Value |"
+            echo "| --- | --- |"
+            echo "| event | ${{ github.event_name }} |"
+            echo "| ref | ${{ github.ref_name }} |"
+            echo "| greeting | $SHOUT |"
+            echo "| matrix | python 3.12 and 3.13 both finished |"
+          } >> "$GITHUB_STEP_SUMMARY"
